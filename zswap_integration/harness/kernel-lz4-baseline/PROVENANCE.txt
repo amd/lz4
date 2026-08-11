@@ -1,0 +1,22 @@
+Kernel default LZ4 - baseline provenance
+========================================
+
+These files are a faithful copy of the Linux kernel's in-tree LZ4 used by
+zswap (compressor=lz4). They are the A/B baseline the AOCL-LZ4 candidate is
+measured against.
+
+Upstream project : Linux kernel (mainline)
+Public repo      : https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+GitHub mirror    : https://github.com/torvalds/linux
+Version / tag    : v6.8
+Commit           : e8f897f4afef0031fe618a8e94127a0934896aba
+
+Files copied verbatim from the kernel tree:
+  lz4_compress.c    <- lib/lz4/lz4_compress.c
+  lz4_decompress.c  <- lib/lz4/lz4_decompress.c
+  lz4hc_compress.c  <- lib/lz4/lz4hc_compress.c
+  lz4defs.h         <- lib/lz4/lz4defs.h
+  lz4_kernel_api.h  <- include/linux/lz4.h
+
+License: GPL-2.0-only (LZ4 kernel port) / BSD-2-Clause (original LZ4, Yann Collet),
+see the per-file SPDX headers.

@@ -1,0 +1,98 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+# Kbuild for the aocl-lz4 zswap crypto compressor.
+#
+# The module is composed of:
+#   aocl_lz4_zswap.o - crypto scomp glue + kernel_fpu-bracketed AVX decode
+#   aocl_core.o      - AOCL-LZ4 core (aocl-kernel/lz4.c)
+#   aocl_glue.o      - 5-arg LZ4_compress_default shim (aocl-kernel/glue.c)
+#
+# Build model: a kernel-safe SCALAR decode by default, plus INDEPENDENT,
+# ADDITIVE toggles (each default OFF, may be combined):
+#
+#   make                     kernel-safe scalar decode (no SIMD -> no kernel_fpu
+#                            tax). Recommended default.
+#   make AOCL_LZ4_AVX=1      also route decode through AOCL's AVX2 decoder,
+#                            bracketed by kernel_fpu_begin()/end() per page.
+#   make AOCL_LZ4_OPTSTACK=1 also apply the compressor hash/codegen tuning
+#                            (smaller L1-resident hash + scalar codegen flags).
+#
+# The scalar decoder carries AOCL decode software prefetch
+# (AOCL_LZ4_DEC_PREFETCH, default on under AOCL_LZ4_OPT): a fast-loop read hint
+# for the compressed input and a write-intent (RFO) hint for the cold
+# destination page, plus a deeper read-ahead. Unconditional hints (__builtin_prefetch
+# never faults). Hint-only / byte-identical output. Default on; disable with
+# make AOCL_LZ4_DEC_PREFETCH=0.
+
+# Kbuild uses -nostdinc, so the compiler's own intrinsic headers (immintrin.h,
+# etc.) are not visible unless the builtin include directory is added
+# explicitly. Clang keeps them under its resource dir
+# ($(CC) -print-resource-dir)/include; GCC has no -print-resource-dir and keeps
+# them under $(CC) -print-file-name=include. Prefer the resource dir when the
+# compiler reports one (Clang), otherwise fall back to GCC's location.
+cc_resource_dir := $(shell $(CC) -print-resource-dir 2>/dev/null)
+ifneq ($(cc_resource_dir),)
+cc_intrin_dir := $(cc_resource_dir)/include
+else
+cc_intrin_dir := $(shell $(CC) -print-file-name=include)
+endif
+
+# --- Additive toggle: decode back-end -----------------------------------------
+# Scalar (default): kernel-safe, no SIMD/FPU. -DAOCL_LZ4_SCALAR tells the glue to
+# skip kernel_fpu bracketing.
+# AVX (AOCL_LZ4_AVX=1): route LZ4_decompress_safe to AOCL's AVX2 decoder,
+# bracketed by kernel_fpu_begin()/end() per page. The AVX decoder is a distinct
+# code path (decode prefetch hints are in the scalar path only).
+#
+# IMPORTANT: the AVX codegen flags (-mavx2/-mavx/-ftree-vectorize) and the AVX
+# decoder macro are confined to the AOCL core object via CFLAGS_aocl_core.o, so
+# the compiler can never auto-vectorize the glue/scomp TUs -- those run OUTSIDE
+# the kernel_fpu_begin()/end() region and must not touch YMM state. Only the
+# scalar/AVX backend selector (-DAOCL_LZ4_SCALAR or none) is visible module-wide.
+AOCL_LZ4_AVX ?= 0
+ifeq ($(AOCL_LZ4_AVX),1)
+DECODE_FLAGS :=
+CFLAGS_aocl_core.o += -isystem $(cc_intrin_dir) -DAOCL_LZ4_AVX_OPT \
+		      -mavx2 -mavx -mno-avx512f -ftree-vectorize
+else
+DECODE_FLAGS := -DAOCL_LZ4_SCALAR
+CFLAGS_aocl_core.o += -isystem $(cc_intrin_dir)
+endif
+
+# --- Toggle: decode software prefetch -----------------------------------------
+# Value-tested so it can be forced OFF as well as ON. Default 1 (on).
+#   make AOCL_LZ4_DEC_PREFETCH=0   build the stock decode path (no hints)
+AOCL_LZ4_DEC_PREFETCH ?= 1
+ifeq ($(AOCL_LZ4_DEC_PREFETCH),0)
+CFLAGS_aocl_core.o += -DAOCL_LZ4_DEC_PREFETCH=0
+else
+CFLAGS_aocl_core.o += -DAOCL_LZ4_DEC_PREFETCH=1
+endif
+
+# --- Additive toggle: compressor hash + codegen tuning ------------------------
+# -DLZ4_MEMORY_USAGE=12 shrinks the compressor hash table to a more L1-resident
+# footprint; it affects the COMPRESSOR, so it composes with either decode
+# back-end. Trades a small amount of compression ratio, hence OFF by default.
+# The scalar codegen flags are wrapped in cc-option so that an option a given
+# compiler does not understand is silently dropped instead of failing the build.
+AOCL_LZ4_OPTSTACK ?= 0
+ifeq ($(AOCL_LZ4_OPTSTACK),1)
+CFLAGS_aocl_core.o += -DLZ4_MEMORY_USAGE=12 \
+	     $(call cc-option,-funroll-all-loops) $(call cc-option,-fpeel-loops) \
+	     $(call cc-option,-fpredictive-commoning) $(call cc-option,-frename-registers) \
+	     $(call cc-option,-fweb) $(call cc-option,-fgcse-after-reload) \
+	     $(call cc-option,-ftree-partial-pre)
+endif
+
+# Compose: base includes + backend selector. Decode prefetch and OPTSTACK tuning
+# are scoped to aocl_core.o above; AVX codegen is likewise scoped, not module-wide.
+ccflags-y := -I$(src)/include -I$(src)/../aocl-kernel $(DECODE_FLAGS)
+
+obj-m += aocl_lz4.o
+aocl_lz4-y := aocl_lz4_zswap.o aocl_core.o aocl_glue.o
+
+# Map the AOCL core sources (kept in ../aocl-kernel) into module objects.
+$(obj)/aocl_core.o: $(src)/../aocl-kernel/lz4.c FORCE
+	$(call if_changed_rule,cc_o_c)
+$(obj)/aocl_glue.o: $(src)/../aocl-kernel/glue.c FORCE
+	$(call if_changed_rule,cc_o_c)

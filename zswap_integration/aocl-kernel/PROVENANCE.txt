@@ -1,0 +1,41 @@
+AOCL-LZ4 kernel-safe adaptation - source provenance
+====================================================
+
+Upstream project : AOCL-Compression (AOCL-LZ4)
+Public repo      : https://github.com/amd/aocl-compression
+Origin remote    : git@github.com:AMD-AOCL/aocl-compression.git
+Branch           : amd-main
+Commit           : 0fdae792f80da972f8e610a0f3f155dbe6078df3
+Nearest tag      : AOCL-20260602
+
+Files derived from upstream (copied verbatim unless noted):
+  lz4.c                              <- algos/lz4/lz4.c                       (ADAPTED, see below)
+  lz4.h                              <- algos/lz4/lz4.h                       (verbatim)
+  aoclPrefix.h                       <- algos/common/aoclPrefix.h            (verbatim; no-op unless AOCL_LLC_PREFIX)
+  algos/common/aoclAlgoLog.h         <- algos/common/aoclAlgoLog.h           (verbatim; no-op, logging disabled)
+  aocl_lz4_fmv_utils.h               <- algos/lz4/aocl_lz4_fmv_utils.h       (verbatim)
+  aocl_lz4_dispatch_variants.h       <- algos/lz4/aocl_lz4_dispatch_variants.h (verbatim)
+  algos/lz4/AOCL_LZ4_compress_generic_validated.h
+                                     <- generated from algos/lz4/lz4_compress_aocl.h.in via the
+                                        substitutions in cmake/algos/lz4/lz4_compress_config.cmake
+  algos/lz4/AOCL_LZ4_decompress_generic.h
+                                     <- generated AVX2 decoder header (used only when AOCL_LZ4_AVX_OPT)
+
+Files written for this adaptation (kernel-safe stubs / glue, NOT from upstream):
+  glue.c                             (5-arg kernel-API LZ4_compress_default shim)
+  aoclAlgoOpt.h                      (minimal replacement of cmake-generated algos/common/aoclAlgoOpt.h)
+  utils/utils.h                      (minimal replacement of utils/utils.h)
+  utils/dispatcher.h                 (minimal replacement of utils/dispatcher.h)
+
+Kernel-safe adaptation of lz4.c
+-------------------------------
+The compressor used is AOCL's scalar-optimized path
+(AOCL_LZ4_compress_fast_extState_internal -> AOCL_LZ4_compress_generic ->
+AOCL_LZ4_compress_generic_validated). The AVX and threaded paths are opt-in.
+lz4.c is compiled under kernel-safe flags (freestanding, no SIMD/FPU, no
+autovectorization) and exposed to the kernel module / benchmark driver through
+glue.c. Decode optimizations are macro-gated and hint-only; with the macros
+undefined the emitted/decoded byte stream is identical to upstream.
+
+Upstream license: BSD 2-Clause (LZ4, Yann Collet) with AOCL modifications
+(see algos/lz4/LICENSE and the per-file headers).
